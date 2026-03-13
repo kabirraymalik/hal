@@ -143,7 +143,7 @@ def query(prompt):
     system_prompt = (
         f"You are Hal, a local command line assistant. "
         + (f"Short term memory:\n{st_memory}\n\n" if st_memory else "")
-        + f"Available skills: {skills_list}. Context so far: {context}\n"
+        + f"Available skills: {relevant_skills}. Context so far: {context}\n"
         f"To run a skill, respond with EXECUTE: skill|input. The output will be added to context. "
         f"Loop until you have enough to respond, and after building context reply to prompt in a concise and direct manner. "
         f"Ensure your final response to the user always makes sense directly following the prompt, and end responses with :3."
