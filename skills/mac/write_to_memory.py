@@ -7,7 +7,7 @@ content = sys.argv[1] if len(sys.argv) > 1 else ""
 if not content.strip():
     sys.exit(0)
 
-memory_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "memory.txt")
+memory_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "memory", "lt_memory.txt")
 
 try:
     with open(memory_file) as f:

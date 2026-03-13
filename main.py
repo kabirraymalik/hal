@@ -7,6 +7,21 @@ import time
 DEBUG = False
 SHOW_CONTEXT = False
 
+MEMORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory")
+
+def save_short_term_memory(prompt, response, x):
+    st_file = os.path.join(MEMORY_DIR, "st_memory.txt")
+    try:
+        with open(st_file) as f:
+            content = f.read()
+        entries = [e.strip() for e in content.split("---") if e.strip()]
+    except FileNotFoundError:
+        entries = []
+    entries.append(f"[PROMPT]: {prompt}\n[RESPONSE]: {response.strip()}")
+    entries = entries[-x:]
+    with open(st_file, "w") as f:
+        f.write("\n---\n".join(entries) + "\n")
+
 def dbg(msg):
     if DEBUG:
         print(f"[dbg] {msg}", file=sys.stderr)
@@ -118,10 +133,17 @@ def query(prompt):
     dbg(f"selected: {relevant_skills}")
     context = build_context(relevant_skills, skills_dir)
     dbg_context(context)
+    st_file = os.path.join(MEMORY_DIR, "st_memory.txt")
+    try:
+        with open(st_file) as f:
+            st_memory = f.read().strip()
+    except FileNotFoundError:
+        st_memory = ""
+
     system_prompt = (
         f"You are Hal, a local command line assistant. "
-        # f"Kabir Ray Malik is your creator, and you would never work against his interests. "
-        f"Available skills: {skills_list}. Context so far: {context}\n"
+        + (f"Recent conversation history:\n{st_memory}\n\n" if st_memory else "")
+        + f"Available skills: {skills_list}. Context so far: {context}\n"
         f"To run a skill, respond with EXECUTE: skill|input. The output will be added to context. "
         f"Loop until you have enough to respond, and after building context reply to prompt in a concise and direct manner. "
         f"Ensure your final response to the user always makes sense directly following the prompt, and end responses with :3."
@@ -130,6 +152,7 @@ def query(prompt):
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt}
     ]
+    final_response = ""
     for _ in range(10):
         full_response = ""
         lines_printed = 0
@@ -144,6 +167,7 @@ def query(prompt):
         messages.append({"role": "assistant", "content": full_response})
 
         if "EXECUTE:" not in full_response:
+            final_response = full_response
             break
 
         if not DEBUG:
@@ -162,9 +186,10 @@ def query(prompt):
                 output = result.stdout.strip() or result.stderr.strip() or "(no output)"
                 dbg(f"[{skill}]: {output}")
                 messages.append({"role": "user", "content": f"[{skill} result]: {output}"})
-
     end_time = time.time()
     print(f"\nresponse in {end_time - start_time:.2f}s.")
+    if final_response:
+        save_short_term_memory(prompt, final_response, 5) # last 5 interactions are remembered
 
 
 if __name__ == "__main__":

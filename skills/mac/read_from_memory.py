@@ -1,7 +1,7 @@
 import sys, os
 
 query = sys.argv[1].lower() if len(sys.argv) > 1 else ""
-memory_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "memory.txt")
+memory_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "memory", "lt_memory.txt")
 
 try:
     with open(memory_file) as f:
