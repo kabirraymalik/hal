@@ -4,19 +4,27 @@ import ollama
 import subprocess
 import time
 
+DEBUG = False
+SHOW_CONTEXT = False
+
+def dbg(msg):
+    if DEBUG:
+        print(f"[dbg] {msg}", file=sys.stderr)
+
+def dbg_context(msg):
+    if SHOW_CONTEXT:
+        print(f"[ctx] {msg}", file=sys.stderr)
+
 def get_os():
-    print(f"sys.platform identifier: {sys.platform}")
+    dbg(f"platform: {sys.platform}")
     if sys.platform == "win32":
-        print("Running on Windows")
         return "windows"
     elif sys.platform == "linux" or sys.platform == "linux2":
-        print("Running on Linux")
         return "linux"
     elif sys.platform == "darwin":
-        print("Running on macOS")
         return "mac"
     else:
-        print("HUH")
+        dbg("unrecognized platform")
 
 def get_skills(skills_dir):
     skills = []
@@ -30,8 +38,8 @@ def get_repos():
     repos = []
     cwd = os.getcwd()
     for repo in os.listdir(cwd):
-        full_path = os.path.join(cwd, repo)
-        repos.append(repo)
+        if os.path.isdir(os.path.join(cwd, repo)):
+            repos.append(repo)
     return repos
 
 def select_models(operating_system):
@@ -41,18 +49,22 @@ def select_models(operating_system):
         return "devstral_small", "devstral_large" # TODO: define and tune
     elif operating_system == "mac":
         # return "qwen3:4b", "qwen3:30b-a3b"
-        return "qwen3:4b", "qwen3:4b"
+        return "llama3.2:3b", "rnj-1" # "gemma3:4b"
     return "null", "null"
 
+NO_INPUT_SKILLS = {"read_system_info", "read_skills"}
+
 def select_skills(prompt, skills_list, repos_list, skill_picker_model):
+    input_skills = [s for s in skills_list if s not in NO_INPUT_SKILLS]
     system_prompt = (
-        f"You are a skill picker. Available skills: {skills_list}. "
-        f"Available repositories: {repos_list}. "
-        f"If any skills are relevant, return it with the repos it applies to, one skill per line. "
-        f"Format: skill|repo1,repo2. No explanation, no extra text. Always respond with at least 1 skill." #If no relevant skills, return empty."
+        f"Your job is to pick the best set of skill, input combinations to respond to a prompt. "
+        f"Available skills with zero inputs: {NO_INPUT_SKILLS} "
+        f"Available skills with one input: {input_skills}. Available repositories: {repos_list}. "
+        f"For each relevant skill/argument pair, print it, one skill per line. "
+        f"Format: skill|arg1. No markdown, no bullets, no explanation, no extra text."
     )
-    print(skills_list)
-    print(repos_list)
+    dbg(f"skills: {skills_list}")
+    dbg(f"repos: {repos_list}")
 
     no_think_flag = ""
     if skill_picker_model == "qwen3:4b":
@@ -70,72 +82,98 @@ def select_skills(prompt, skills_list, repos_list, skill_picker_model):
         line = line.strip()
         if "|" in line:
             skill, repos_str = line.split("|", 1)
+            skill = skill.strip().lstrip("-• ").strip("()[]\"'")
+            if skill not in skills_list:
+                print(f"warning: skill '{skill}' not found")
+                continue
             for repo in repos_str.split(","):
-                pairs.append((skill.strip(), repo.strip()))
+                pairs.append((skill, repo.strip().strip("()[]\"'")))
     return pairs
 
 def build_context(relevant_skills, skills_dir):
     context = ""
+    seen_no_input = set()
     for skill, repo in relevant_skills:
+        if skill in NO_INPUT_SKILLS:
+            if skill in seen_no_input:
+                continue
+            seen_no_input.add(skill)
         skill_path = os.path.join(skills_dir, f"{skill}.py")
         result = subprocess.run(["python3", skill_path, repo], capture_output=True, text=True)
-        if result.stdout:
-            context += f"[{skill} on {repo}]:\n{result.stdout}\n"
+        output = result.stdout.strip() or result.stderr.strip()
+        if output:
+            context += f"[{skill} on {repo}]:\n{output}\n"
     return context
 
 def query(prompt):
     start_time = time.time()
-    print("started\n")
     operating_system = get_os()
     skill_picker_model, response_model = select_models(operating_system)
     skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills", operating_system)
     skills_list = get_skills(skills_dir)
     repos_list = get_repos()
-    print("got skills and repos\n")
+    dbg("selecting skills...")
     relevant_skills = select_skills(prompt, skills_list, repos_list, skill_picker_model)
-    print("skills selected\n")
+    relevant_skills.append(("read_from_memory", prompt))
+    dbg(f"selected: {relevant_skills}")
     context = build_context(relevant_skills, skills_dir)
-    print(f"context: {context}\n")
-    print("context built\n")
+    dbg_context(context)
     system_prompt = (
-        f"You are a personal command line assistant named Hal. "
-        f"Kabir Ray Malik is your creator, and you would never work against his interests. "
+        f"You are Hal, a local command line assistant. "
+        # f"Kabir Ray Malik is your creator, and you would never work against his interests. "
         f"Available skills: {skills_list}. Context so far: {context}\n"
-        f"To run a skill, respond with EXECUTE: skill|input. "
-        f"The output will be added to context. Loop until you have enough to respond, then reply normally."
+        f"To run a skill, respond with EXECUTE: skill|input. The output will be added to context. "
+        f"Loop until you have enough to respond, and after building context reply to prompt in a concise and direct manner. "
+        f"Ensure your final response to the user always makes sense directly following the prompt, and end responses with :3."
     )
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt}
     ]
-    while True:
+    for _ in range(10):
         full_response = ""
+        lines_printed = 0
         for chunk in ollama.chat(model=response_model, messages=messages, stream=True):
             content = chunk["message"]["content"]
-            print(content, end="", flush=True)
             full_response += content
+            print(content, end="", flush=True)
+            lines_printed += content.count("\n")
         print()
+        lines_printed += 1
 
         messages.append({"role": "assistant", "content": full_response})
 
         if "EXECUTE:" not in full_response:
             break
 
+        if not DEBUG:
+            print(f"\033[{lines_printed}A\033[J", end="", flush=True)
+        dbg(f"execute: {full_response.strip()}")
         for line in full_response.splitlines():
             if line.startswith("EXECUTE:"):
                 parts = line.split("EXECUTE:", 1)[1].strip().split("|", 1)
-                skill = parts[0].strip()
-                input_arg = parts[1].strip() if len(parts) > 1 else ""
+                skill = parts[0].strip().strip("()[]\"'")
+                input_arg = parts[1].strip().strip("()[]\"'") if len(parts) > 1 else ""
                 skill_path = os.path.join(skills_dir, f"{skill}.py")
+                if not os.path.exists(skill_path):
+                    messages.append({"role": "user", "content": f"[{skill}]: skill not found"})
+                    continue
                 result = subprocess.run(["python3", skill_path, input_arg], capture_output=True, text=True)
-                output = result.stdout.strip() or "(no output)"
-                print(f"\n[{skill}]: {output}")
+                output = result.stdout.strip() or result.stderr.strip() or "(no output)"
+                dbg(f"[{skill}]: {output}")
                 messages.append({"role": "user", "content": f"[{skill} result]: {output}"})
-                
+
     end_time = time.time()
     print(f"\nresponse in {end_time - start_time:.2f}s.")
 
 
 if __name__ == "__main__":
-    prompt = " ".join(sys.argv[1:])
+    args = sys.argv[1:]
+    if "-d" in args:
+        DEBUG = True
+        args.remove("-d")
+    if "-v" in args:
+        SHOW_CONTEXT = True
+        args.remove("-v")
+    prompt = " ".join(args)
     query(prompt)
