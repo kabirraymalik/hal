@@ -1,10 +1,11 @@
 # hal
 
-A command-line assistant. Run `hal <your question>` from any terminal.
+A local command line assistant.
 
 ## Requirements
 
 - Python 3
+- Ollama
 
 ## Setup
 
