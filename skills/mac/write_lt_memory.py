@@ -21,7 +21,7 @@ for line in existing:
     if not existing_words:
         continue
     overlap = len(new_words & existing_words) / len(new_words | existing_words)
-    if overlap > 0.8: #TODO: tune
+    if overlap > 0.8:
         print(f"duplicate skipped")
         sys.exit(0)
 

@@ -129,7 +129,7 @@ def query(prompt):
     repos_list = get_repos()
     dbg("selecting skills...")
     relevant_skills = select_skills(prompt, skills_list, repos_list, skill_picker_model)
-    relevant_skills.append(("read_from_memory", prompt))
+    relevant_skills.append(("read_lt_memory", prompt))
     dbg(f"selected: {relevant_skills}")
     context = build_context(relevant_skills, skills_dir)
     dbg_context(context)
@@ -142,7 +142,7 @@ def query(prompt):
 
     system_prompt = (
         f"You are Hal, a local command line assistant. "
-        + (f"Recent conversation history:\n{st_memory}\n\n" if st_memory else "")
+        + (f"Short term memory:\n{st_memory}\n\n" if st_memory else "")
         + f"Available skills: {skills_list}. Context so far: {context}\n"
         f"To run a skill, respond with EXECUTE: skill|input. The output will be added to context. "
         f"Loop until you have enough to respond, and after building context reply to prompt in a concise and direct manner. "
