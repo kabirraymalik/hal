@@ -64,7 +64,7 @@ def select_models(operating_system):
         return "devstral_small", "devstral_large" # TODO: define and tune
     elif operating_system == "mac":
         # return "qwen3:4b", "qwen3:30b-a3b"
-        return "llama3.2:3b", "rnj-1" # "gemma3:4b"
+        return "llama3.2:3b", "qwen3.5:9b" #"gemma3:4b" #"rnj-1" 
     return "null", "null"
 
 NO_INPUT_SKILLS = {"read_system_info", "read_skills"}
@@ -72,7 +72,7 @@ NO_INPUT_SKILLS = {"read_system_info", "read_skills"}
 def select_skills(prompt, skills_list, repos_list, skill_picker_model):
     input_skills = [s for s in skills_list if s not in NO_INPUT_SKILLS]
     system_prompt = (
-        f"Your job is to pick the best set of skill, input combinations to respond to a prompt. "
+        f"Your job is to pick the best set of skill, input combinations to respond to a prompt. If any information seems important, make sure to write it to lt memory."
         f"Available skills with zero inputs: {NO_INPUT_SKILLS} "
         f"Available skills with one input: {input_skills}. Available repositories: {repos_list}. "
         f"For each relevant skill/argument pair, print it, one skill per line. "
@@ -152,6 +152,7 @@ def query(prompt):
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt}
     ]
+    dbg(f"--- system prompt ---\n{system_prompt}\n--- user prompt ---\n{prompt}\n---")
     final_response = ""
     for _ in range(10):
         full_response = ""
@@ -189,7 +190,7 @@ def query(prompt):
     end_time = time.time()
     print(f"\nresponse in {end_time - start_time:.2f}s.")
     if final_response:
-        save_short_term_memory(prompt, final_response, 5) # last 5 interactions are remembered
+        save_short_term_memory(prompt, final_response, 3) # last 3 interactions are remembered
 
 
 if __name__ == "__main__":
