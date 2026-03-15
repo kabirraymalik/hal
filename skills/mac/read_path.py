@@ -1,7 +1,10 @@
 import sys, os
 
 path = sys.argv[1] if len(sys.argv) > 1 else "."
+path = path.strip().strip("\"'")
 path = os.path.expanduser(path)
+if not os.path.isabs(path):
+    path = os.path.join(os.getcwd(), path)
 
 try:
     if os.path.isdir(path):
