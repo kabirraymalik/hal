@@ -4,6 +4,9 @@ import ollama
 import subprocess
 import time
 
+import inspect
+import ast
+
 DEBUG = False
 SHOW_CONTEXT = False
 
@@ -42,11 +45,23 @@ def get_os():
         dbg("unrecognized platform")
 
 def get_skills(skills_dir):
+    skill_docstring = "NULL"
     skills = []
     for filename in os.listdir(skills_dir):
         if filename.endswith(".py") or filename.endswith(".sh"):
+            skill_path = os.path.join(skills_dir, filename)
+            with open(skill_path) as f:
+                code = f.read()
+                tree = ast.parse(code)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.FunctionDef):
+                        docstring = inspect.getdoc(node)
+                        skill_docstring = "NULL"
+                        if docstring:
+                            skill_docstring = docstring
+                            print(f"{node.name}: {docstring}")
             skill_name = os.path.splitext(filename)[0]
-            skills.append(skill_name)
+            skills.append([skill_name, skill_docstring])
     return skills
 
 def get_repos():
@@ -105,20 +120,12 @@ def select_skills(prompt, skills_list, repos_list, skill_picker_model):
                 pairs.append((skill, repo.strip().strip("()[]\"'")))
     return pairs
 
-def build_context(relevant_skills, skills_dir):
-    context = ""
-    seen_no_input = set()
-    for skill, repo in relevant_skills:
-        if skill in NO_INPUT_SKILLS:
-            if skill in seen_no_input:
-                continue
-            seen_no_input.add(skill)
-        skill_path = os.path.join(skills_dir, f"{skill}.py")
-        result = subprocess.run(["python3", skill_path, repo], capture_output=True, text=True)
-        output = result.stdout.strip() or result.stderr.strip()
-        if output:
-            context += f"[{skill} on {repo}]:\n{output}\n"
-    return context
+def compile_skills(skills_list):
+    skills = ""
+    for skill in skills_list:
+        skills = skills + f"{skill[0]}: {skill[1]}\n"
+    return skills
+
 
 def query(prompt):
     start_time = time.time()
@@ -127,11 +134,12 @@ def query(prompt):
     skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills", operating_system)
     skills_list = get_skills(skills_dir)
     repos_list = get_repos()
-    dbg("selecting skills...")
-    relevant_skills = select_skills(prompt, skills_list, repos_list, skill_picker_model)
-    relevant_skills.append(("read_lt_memory", prompt))
-    dbg(f"selected: {relevant_skills}")
-    context = build_context(relevant_skills, skills_dir)
+    #dbg("selecting skills...")
+    #relevant_skills = select_skills(prompt, skills_list, repos_list, skill_picker_model)
+    #relevant_skills.append(("read_lt_memory", prompt))
+    #dbg(f"selected: {relevant_skills}")
+    context = "" # build_context(skills_list, skills_dir)
+    compiled_skills = compile_skills(skills_list)
     dbg_context(context)
     st_file = os.path.join(MEMORY_DIR, "st_memory.txt")
     try:
@@ -141,9 +149,9 @@ def query(prompt):
         st_memory = ""
 
     system_prompt = (
-        f"You are Hal, a local command line assistant. "
-        + (f"Short term memory:\n{st_memory}\n\n" if st_memory else "")
-        + f"Available skills: {relevant_skills}. Context so far: {context}\n"
+        f"You are Hal, a local command line assistive agent."
+        + (f"Short term memory:\n{st_memory}\n\n" if st_memory != "" else "")
+        + f"AVAILABLE SKILLS: \n{compiled_skills}. Context so far: {context}\n"
         f"To run a skill, respond with EXECUTE: skill|input. The output will be added to context. "
         f"Loop until you have enough to respond, and after building context reply to prompt in a concise and direct manner. "
         f"Ensure your final response to the user always makes sense directly following the prompt, and end responses with :3."
@@ -152,8 +160,9 @@ def query(prompt):
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt}
     ]
+    dbg(f"--- system prompt ---\n{system_prompt}\n--- user prompt ---\n{prompt}\n---")
     final_response = ""
-    for _ in range(10):
+    for _ in range(20):
         full_response = ""
         lines_printed = 0
         for chunk in ollama.chat(model=response_model, messages=messages, stream=True):
@@ -164,7 +173,7 @@ def query(prompt):
         print()
         lines_printed += 1
 
-        messages.append({"role": "assistant", "content": full_response})
+        messages.append({"role": "user", "content": full_response})
 
         if "EXECUTE:" not in full_response:
             final_response = full_response
