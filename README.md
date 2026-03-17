@@ -2,15 +2,17 @@
 
 A local command line assistant project: real agent integration without the risk.
 
-/memory : stores long and short term memory
-    lt_memory: persistent, conventionally parsed
-    st_memory: last n prompt/reponse pairs
-/pfc : prefrontal coretex responsible for learning and executing skill selection
-    /data: generated datasets based on skill list
-    /weights: trained DeBERTa-large weights
-/skills : hal's skill scripts
-    /mac: scripts for mac skills, included in init for preload
-    /linux: '', except for linux
+```
+/memory   stores long and short term memory
+  lt_memory   persistent, conventionally parsed
+  st_memory   last n prompt/response pairs
+/pfc      prefrontal cortex — skill selection learning and execution
+  /data     generated datasets based on skill list
+  /weights  trained DeBERTa-large weights
+/skills   hal's skill scripts
+  /mac      mac skills, included in init for preload
+  /linux    linux skills
+```
 
 ## Requirements
 

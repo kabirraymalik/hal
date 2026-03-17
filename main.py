@@ -7,15 +7,16 @@ import importlib
 import inspect
 import ast
 import pfc.DeBERTa as DeBERTa
+from pfc.train import train_skill_selector
+from utils import *
 
 # Hyperparams
 SKILLS_RELEVANT_THRESHOLD = 0.7
 SKILL_RELEVANT_THRESHOLD = 0.5
-
+SHORT_TERM_MEMORY_LEN = 3
 DEBUG = False
 SHOW_CONTEXT = False
 HAL_DIR = os.path.dirname(os.path.abspath(__file__))
-MEMORY_DIR = os.path.join(HAL_DIR, "memory")
 
 def save_short_term_memory(prompt, response, x):
     st_file = os.path.join(MEMORY_DIR, "st_memory.txt")
@@ -39,14 +40,6 @@ def load_st_memory():
         st_memory = ""
     return st_memory
 
-def dbg(msg):
-    if DEBUG:
-        print(f"[dbg] {msg}", file=sys.stderr)
-
-def dbg_context(msg):
-    if SHOW_CONTEXT:
-        print(f"[ctx] {msg}", file=sys.stderr)
-
 def get_platform():
     dbg(f"platform: {sys.platform}")
     if sys.platform == "win32":
@@ -66,36 +59,18 @@ def get_dirs_in_dir():
             repos.append(repo)
     return repos
 
-def get_inputs():
+def get_inputs(): # placeholder, TODO: develop live input group
     inputs = []
-
     inputs = inputs + get_dirs_in_dir()
     return inputs
 
-def select_models(operating_system):
-    if operating_system == "windows":
-        return "null", "null" # TODO: define and tune
-    elif operating_system == "linux":
-        return "devstral_small", "devstral_large" # TODO: define and tune
-    elif operating_system == "mac":
-        # return "qwen3:4b", "qwen3:30b-a3b"
-        return "llama3.2:3b", "qwen3.5:9b" #"gemma3:4b" #"rnj-1" 
-    return "null", "null"
-
-NO_INPUT_SKILLS = {"read_system_info", "read_skills"}
-
-def select_inputs(prompt, skill_name, relevant_inputs, skill_picker_model): # TODO: craft system prompt, refine for selecting inputs per skill (batch call???)
-    input_skills = [s for s in skills_list if s not in NO_INPUT_SKILLS]
+def select_inputs(prompt, skill_name, relevant_inputs, skill_picker_model): # TODO: optimize with batch call instead of looping through skills? see query() loop
     system_prompt = (
-        f"Your job is to pick the best set of skill, input combinations to respond to a prompt. If any information seems important, make sure to write it to lt memory."
-        f"Available skills with zero inputs: {NO_INPUT_SKILLS} "
-        f"Available skills with one input: {input_skills}. Available repositories: {repos_list}. "
-        f"For each relevant skill/argument pair, print it, one skill per line. "
-        f"Format: skill|arg1. No markdown, no bullets, no explanation, no extra text."
+        f"You are an input selector for skills. Your job is to, based on a prompt, a relevant skill, and a set of inputs:"
+        f"Determine the best set of inputs to apply the skill to. These inputs should be selected based on relevance to the prompt and skill."
+        f"Skill: {skill_name}. Available inputs: {relevant_inputs}. Simply respond with a comma-separated list of the best inputs to use for the skill."
+        f"Format: 'input1, input2, input3', where the string inputx is included among available inputs. No markdown, no bullets, no explanation, no extra text."
     )
-    dbg(f"skills: {skills_list}")
-    dbg(f"repos: {repos_list}")
-
     no_think_flag = ""
     if skill_picker_model == "qwen3:4b":
         no_think_flag = " /no_think"
@@ -107,18 +82,14 @@ def select_inputs(prompt, skill_name, relevant_inputs, skill_picker_model): # TO
         ],
     )
     content = response["message"]["content"].strip()
-    pairs = []
-    for line in content.splitlines():
-        line = line.strip()
-        if "|" in line:
-            skill, repos_str = line.split("|", 1)
-            skill = skill.strip().lstrip("-• ").strip("()[]\"'")
-            if skill not in skills_list:
-                print(f"warning: skill '{skill}' not found")
-                continue
-            for repo in repos_str.split(","):
-                pairs.append((skill, repo.strip().strip("()[]\"'")))
-    return pairs
+    input_list = []
+    for i in content.split(","):
+        i = i.strip().strip("\"'")
+        if i and i in relevant_inputs:
+            input_list.append(i)
+    dbg(f"selected skill {skill_name} to use on {input_list}")
+    return [skill_name, input_list]
+
 
 def get_skills(platform):
     skills_dir = os.path.join(HAL_DIR, "skills", platform)
@@ -142,28 +113,6 @@ def get_skills(platform):
     return skills
 
 def compile_skills(platform):
-    """
-    skills_dir = os.path.join(HAL_DIR, "skills", platform)
-    skills = {}
-    catalog_lines = []
-
-    for finder, module_name, _ in pkgutil.iter_modules([skills_dir]):
-        module = importlib.import_module(f"skills.{platform}.{module_name}")
-        for attr in dir(module):
-            obj = getattr(module, attr)
-            if isinstance(obj, type) and issubclass(obj, Skill) and obj is not Skill:
-                instance = obj()
-                skills[instance.name] = instance
-                catalog_lines.append(
-                    f"SKILL: {instance.name}\n"
-                    f"  {instance.description}\n"
-                    f"  Input: {instance.input}\n"
-                    f"  Output: {instance.output}"
-                )
-
-    catalog = "\n".join(catalog_lines)
-    return skills, catalog
-    """
     module = importlib.import_module(f"skills.{platform}")
     skills = {}
     catalog_lines = []
@@ -180,6 +129,15 @@ def compile_skills(platform):
 
     catalog = "\n".join(catalog_lines)
     return skills, catalog
+
+def build_context(executes):
+    context = ""
+    for exec in executes:
+        skill_name, inputs = exec
+        for input in inputs:
+            # TODO: clean inputs, error check per skill?
+            context = context + f"[ran {skill_name} on {input}]\n" # TODO: run skill, add output
+    return context
 
 def query(prompt):
     start_time = time.time()
@@ -199,8 +157,8 @@ def query(prompt):
         for relevance in skill_relevances: # TODO: perhaps do a batch call for all skills?
             if relevance.value > SKILL_RELEVANT_THRESHOLD:
                 dbg(f"selecting inputs for: {relevance.skill_name} with relevance {relevance.value}...")
-                context_builder_executes.append([relevance.skill_name, select_inputs(prompt, relevance.skill_name, relevant_inputs)]) # [str: "skill_name", str: "input1, input2, ..."]
-        context = build_context(context_builder_executes) # [[str: "skill_name", str: "input1, input2, ..."], [str: "skill_name", str: "input1, input2, ..."], ...] -> str: "context"
+                context_builder_executes.append([relevance.skill_name, select_inputs(prompt, relevance.skill_name, relevant_inputs)]) # [str: "skill_name", str[]: ["input1", "input2", ...]
+        context = build_context(context_builder_executes) # [[str: "skill_name", str[]: ["input1", "input2", ...], [str: "skill_name", str[]: ["input1", "input2", ...], ...] -> str: "context"
     else:
         dbg("skills not relevant, skipping to agent loop...")
     dbg_context(context)
@@ -256,16 +214,20 @@ def query(prompt):
     end_time = time.time()
     print(f"\nresponse in {end_time - start_time:.2f}s.")
     if final_response:
-        save_short_term_memory(prompt, final_response, 3) # last 3 interactions are remembered
+        save_short_term_memory(prompt, final_response, SHORT_TERM_MEMORY_LEN) # last 3 interactions are remembered
 
 
 if __name__ == "__main__":
     args = sys.argv[1:]
+    if "-t" in args:
+        train_skill_selector()
+        args.remove("-t")
     if "-d" in args:
         DEBUG = True
         args.remove("-d")
     if "-v" in args:
         SHOW_CONTEXT = True
         args.remove("-v")
+    
     prompt = " ".join(args)
     query(prompt)
