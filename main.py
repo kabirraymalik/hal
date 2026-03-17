@@ -3,14 +3,19 @@ import os
 import ollama
 import subprocess
 import time
-
+import importlib
 import inspect
 import ast
+import pfc.DeBERTa as DeBERTa
+
+# Hyperparams
+SKILLS_RELEVANT_THRESHOLD = 0.7
+SKILL_RELEVANT_THRESHOLD = 0.5
 
 DEBUG = False
 SHOW_CONTEXT = False
-
-MEMORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory")
+HAL_DIR = os.path.dirname(os.path.abspath(__file__))
+MEMORY_DIR = os.path.join(HAL_DIR, "memory")
 
 def save_short_term_memory(prompt, response, x):
     st_file = os.path.join(MEMORY_DIR, "st_memory.txt")
@@ -25,6 +30,15 @@ def save_short_term_memory(prompt, response, x):
     with open(st_file, "w") as f:
         f.write("\n---\n".join(entries) + "\n")
 
+def load_st_memory():
+    st_file = os.path.join(MEMORY_DIR, "st_memory.txt")
+    try:
+        with open(st_file) as f:
+            st_memory = f.read().strip()
+    except FileNotFoundError:
+        st_memory = ""
+    return st_memory
+
 def dbg(msg):
     if DEBUG:
         print(f"[dbg] {msg}", file=sys.stderr)
@@ -33,44 +47,30 @@ def dbg_context(msg):
     if SHOW_CONTEXT:
         print(f"[ctx] {msg}", file=sys.stderr)
 
-def get_os():
+def get_platform():
     dbg(f"platform: {sys.platform}")
     if sys.platform == "win32":
         return "windows"
-    elif sys.platform == "linux" or sys.platform == "linux2":
+    elif sys.platform.startswith("linux"):
         return "linux"
     elif sys.platform == "darwin":
         return "mac"
     else:
         dbg("unrecognized platform")
 
-def get_skills(skills_dir):
-    skill_docstring = "NULL"
-    skills = []
-    for filename in os.listdir(skills_dir):
-        if filename.endswith(".py") or filename.endswith(".sh"):
-            skill_path = os.path.join(skills_dir, filename)
-            with open(skill_path) as f:
-                code = f.read()
-                tree = ast.parse(code)
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.FunctionDef):
-                        docstring = inspect.getdoc(node)
-                        skill_docstring = "NULL"
-                        if docstring:
-                            skill_docstring = docstring
-                            print(f"{node.name}: {docstring}")
-            skill_name = os.path.splitext(filename)[0]
-            skills.append([skill_name, skill_docstring])
-    return skills
-
-def get_repos():
+def get_dirs_in_dir():
     repos = []
     cwd = os.getcwd()
     for repo in os.listdir(cwd):
         if os.path.isdir(os.path.join(cwd, repo)):
             repos.append(repo)
     return repos
+
+def get_inputs():
+    inputs = []
+
+    inputs = inputs + get_dirs_in_dir()
+    return inputs
 
 def select_models(operating_system):
     if operating_system == "windows":
@@ -84,7 +84,7 @@ def select_models(operating_system):
 
 NO_INPUT_SKILLS = {"read_system_info", "read_skills"}
 
-def select_skills(prompt, skills_list, repos_list, skill_picker_model):
+def select_inputs(prompt, skill_name, relevant_inputs, skill_picker_model): # TODO: craft system prompt, refine for selecting inputs per skill (batch call???)
     input_skills = [s for s in skills_list if s not in NO_INPUT_SKILLS]
     system_prompt = (
         f"Your job is to pick the best set of skill, input combinations to respond to a prompt. If any information seems important, make sure to write it to lt memory."
@@ -120,33 +120,91 @@ def select_skills(prompt, skills_list, repos_list, skill_picker_model):
                 pairs.append((skill, repo.strip().strip("()[]\"'")))
     return pairs
 
-def compile_skills(skills_list):
-    skills = ""
-    for skill in skills_list:
-        skills = skills + f"{skill[0]}: {skill[1]}\n"
+def get_skills(platform):
+    skills_dir = os.path.join(HAL_DIR, "skills", platform)
+    skill_docstring = "NULL"
+    skills = []
+    for filename in os.listdir(skills_dir):
+        if filename.endswith(".py") or filename.endswith(".sh"):
+            skill_path = os.path.join(skills_dir, filename)
+            with open(skill_path) as f:
+                code = f.read()
+                tree = ast.parse(code)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.FunctionDef):
+                        docstring = inspect.getdoc(node)
+                        skill_docstring = "NULL"
+                        if docstring:
+                            skill_docstring = docstring
+                            print(f"{node.name}: {docstring}")
+            skill_name = os.path.splitext(filename)[0]
+            skills.append([skill_name, skill_docstring])
     return skills
 
+def compile_skills(platform):
+    """
+    skills_dir = os.path.join(HAL_DIR, "skills", platform)
+    skills = {}
+    catalog_lines = []
+
+    for finder, module_name, _ in pkgutil.iter_modules([skills_dir]):
+        module = importlib.import_module(f"skills.{platform}.{module_name}")
+        for attr in dir(module):
+            obj = getattr(module, attr)
+            if isinstance(obj, type) and issubclass(obj, Skill) and obj is not Skill:
+                instance = obj()
+                skills[instance.name] = instance
+                catalog_lines.append(
+                    f"SKILL: {instance.name}\n"
+                    f"  {instance.description}\n"
+                    f"  Input: {instance.input}\n"
+                    f"  Output: {instance.output}"
+                )
+
+    catalog = "\n".join(catalog_lines)
+    return skills, catalog
+    """
+    module = importlib.import_module(f"skills.{platform}")
+    skills = {}
+    catalog_lines = []
+
+    for cls in module.SKILLS:
+        instance = cls()
+        skills[instance.name] = instance
+        catalog_lines.append(
+            f"SKILL: {instance.name}\n"
+            f"  {instance.description}\n"
+            f"  Input: {instance.input}\n"
+            f"  Output: {instance.output}"
+        )
+
+    catalog = "\n".join(catalog_lines)
+    return skills, catalog
 
 def query(prompt):
     start_time = time.time()
-    operating_system = get_os()
-    skill_picker_model, response_model = select_models(operating_system)
-    skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills", operating_system)
-    skills_list = get_skills(skills_dir)
-    repos_list = get_repos()
-    #dbg("selecting skills...")
-    #relevant_skills = select_skills(prompt, skills_list, repos_list, skill_picker_model)
-    #relevant_skills.append(("read_lt_memory", prompt))
-    #dbg(f"selected: {relevant_skills}")
-    context = "" # build_context(skills_list, skills_dir)
-    compiled_skills = compile_skills(skills_list)
+    deberta = DeBERTa()
+    skill_relevances, skills_necessary = deberta.query(prompt) #TODO: async call to 2 headed DeBERTa for skill selection or bypass
+    platform = get_platform()
+    rag_guy, response_guy = select_models(platform)
+    relevant_inputs = get_inputs()
+    compiled_skills = compile_skills(platform) # pre compiles skills into LLM-understandable exec options
+    context = ""
+    while(deberta.is_thinking()):
+        dbg("waitin on big DeBERTa...")
+        time.sleep(0.001)
+    if(skills_necessary > SKILLS_RELEVANT_THRESHOLD):
+        dbg("skills are relevant! selecting skills and building context...")
+        context_builder_executes = []
+        for relevance in skill_relevances: # TODO: perhaps do a batch call for all skills?
+            if relevance.value > SKILL_RELEVANT_THRESHOLD:
+                dbg(f"selecting inputs for: {relevance.skill_name} with relevance {relevance.value}...")
+                context_builder_executes.append([relevance.skill_name, select_inputs(prompt, relevance.skill_name, relevant_inputs)]) # [str: "skill_name", str: "input1, input2, ..."]
+        context = build_context(context_builder_executes) # [[str: "skill_name", str: "input1, input2, ..."], [str: "skill_name", str: "input1, input2, ..."], ...] -> str: "context"
+    else:
+        dbg("skills not relevant, skipping to agent loop...")
     dbg_context(context)
-    st_file = os.path.join(MEMORY_DIR, "st_memory.txt")
-    try:
-        with open(st_file) as f:
-            st_memory = f.read().strip()
-    except FileNotFoundError:
-        st_memory = ""
+    st_memory = load_st_memory()
 
     system_prompt = (
         f"You are Hal, a local command line assistive agent."
@@ -165,7 +223,7 @@ def query(prompt):
     for _ in range(20):
         full_response = ""
         lines_printed = 0
-        for chunk in ollama.chat(model=response_model, messages=messages, stream=True):
+        for chunk in ollama.chat(model=response_guy, messages=messages, stream=True):
             content = chunk["message"]["content"]
             full_response += content
             print(content, end="", flush=True)
@@ -187,7 +245,7 @@ def query(prompt):
                 parts = line.split("EXECUTE:", 1)[1].strip().split("|", 1)
                 skill = parts[0].strip().strip("()[]\"'")
                 input_arg = parts[1].strip().strip("()[]\"'") if len(parts) > 1 else ""
-                skill_path = os.path.join(skills_dir, f"{skill}.py")
+                skill_path = os.path.join(os.path.join(HAL_DIR, platform, "skills"), f"{skill}.py")
                 if not os.path.exists(skill_path):
                     messages.append({"role": "user", "content": f"[{skill}]: skill not found"})
                     continue
