@@ -3,6 +3,9 @@
 A local command line assistant project: real agent integration without the risk.
 
 ```
+main.py   main functions and agent loop
+config.py various configuration variables
+utils.py  various utilities used accross project
 /memory   stores long and short term memory
   lt_memory   persistent, conventionally parsed
   st_memory   last n prompt/response pairs

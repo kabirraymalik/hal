@@ -18,16 +18,17 @@ class WriteLtMemory(Skill):
         self.description = "Write a fact or piece of information to long-term memory"
         self.input = "string: the memory content to store"
         self.output = "string: 'written' or 'duplicate skipped'"
-        self.context_builder = False
         self.time_out = 200
-        self.tags = ["remember", "save", "store", "memory", "note", "fact", "learn", "write"]
 
     async def use(self, input_str=""):
         content = input_str.strip()
         if not content:
             return "nothing to write"
 
-        memory_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "memory", "lt_memory.jsonl")
+        memory_file = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", "memory", "lt_memory.jsonl"
+        )
 
         existing = []
         try:

@@ -1,40 +1,29 @@
 import sys
 import os
 import ollama
-import subprocess
 import time
 import importlib
-import inspect
-import ast
-import pfc.DeBERTa as DeBERTa
+import asyncio
+from pfc.DeBERTa import DeBERTaSmall, DeBERTaBase
 from pfc.train import train_skill_selector
 from utils import *
-
-# Hyperparams
-SKILLS_RELEVANT_THRESHOLD = 0.7
-SKILL_RELEVANT_THRESHOLD = 0.5
-SHORT_TERM_MEMORY_LEN = 3
-DEBUG = False
-SHOW_CONTEXT = False
-HAL_DIR = os.path.dirname(os.path.abspath(__file__))
+import config
 
 def save_short_term_memory(prompt, response, x):
-    st_file = os.path.join(MEMORY_DIR, "st_memory.txt")
     try:
-        with open(st_file) as f:
+        with open(config.ST_MEMORY_DIR) as f:
             content = f.read()
         entries = [e.strip() for e in content.split("---") if e.strip()]
     except FileNotFoundError:
         entries = []
     entries.append(f"[PROMPT]: {prompt}\n[RESPONSE]: {response.strip()}")
     entries = entries[-x:]
-    with open(st_file, "w") as f:
+    with open(config.ST_MEMORY_DIR, "w") as f:
         f.write("\n---\n".join(entries) + "\n")
 
 def load_st_memory():
-    st_file = os.path.join(MEMORY_DIR, "st_memory.txt")
     try:
-        with open(st_file) as f:
+        with open(config.ST_MEMORY_DIR) as f:
             st_memory = f.read().strip()
     except FileNotFoundError:
         st_memory = ""
@@ -49,7 +38,7 @@ def get_platform():
     elif sys.platform == "darwin":
         return "mac"
     else:
-        dbg("unrecognized platform")
+        dbg(f"how????? unidentified platform: {sys.platform}")
 
 def get_dirs_in_dir():
     repos = []
@@ -88,29 +77,7 @@ def select_inputs(prompt, skill_name, relevant_inputs, skill_picker_model): # TO
         if i and i in relevant_inputs:
             input_list.append(i)
     dbg(f"selected skill {skill_name} to use on {input_list}")
-    return [skill_name, input_list]
-
-
-def get_skills(platform):
-    skills_dir = os.path.join(HAL_DIR, "skills", platform)
-    skill_docstring = "NULL"
-    skills = []
-    for filename in os.listdir(skills_dir):
-        if filename.endswith(".py") or filename.endswith(".sh"):
-            skill_path = os.path.join(skills_dir, filename)
-            with open(skill_path) as f:
-                code = f.read()
-                tree = ast.parse(code)
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.FunctionDef):
-                        docstring = inspect.getdoc(node)
-                        skill_docstring = "NULL"
-                        if docstring:
-                            skill_docstring = docstring
-                            print(f"{node.name}: {docstring}")
-            skill_name = os.path.splitext(filename)[0]
-            skills.append([skill_name, skill_docstring])
-    return skills
+    return input_list
 
 def compile_skills(platform):
     module = importlib.import_module(f"skills.{platform}")
@@ -130,35 +97,48 @@ def compile_skills(platform):
     catalog = "\n".join(catalog_lines)
     return skills, catalog
 
-def build_context(executes):
+async def build_context(executes, skills):
     context = ""
-    for exec in executes:
-        skill_name, inputs = exec
-        for input in inputs:
-            # TODO: clean inputs, error check per skill?
-            context = context + f"[ran {skill_name} on {input}]\n" # TODO: run skill, add output
+    for execution in executes:
+        skill_name, skill_inputs = execution
+        if skill_name not in skills:
+            dbg(f"skill {skill_name} not found in compiled skills, skipping execution")
+            continue
+        for input_value in skill_inputs:
+            try:
+                output = await skills[skill_name].use(input_value)
+                context = context + f"[EXECUTED {skill_name}({input_value})] WITH RESULT:\n{output}\n\n"
+            except Exception as e:
+                dbg(f"[ERROR: {skill_name}({input_value})] -> {e}")
+                context = context + f"[FAILED TO EXECUTE {skill_name}({input_value})] WITH ERROR:\n{e}\n\n"
     return context
 
-def query(prompt):
+async def query(prompt):
     start_time = time.time()
-    deberta = DeBERTa()
-    skill_relevances, skills_necessary = deberta.query(prompt) #TODO: async call to 2 headed DeBERTa for skill selection or bypass
+    deberta_small = DeBERTaSmall()
+    skills_necessary = deberta_small.predict(prompt) #TODO: async call to 2 headed DeBERTa for skill selection or bypass
     platform = get_platform()
     rag_guy, response_guy = select_models(platform)
     relevant_inputs = get_inputs()
-    compiled_skills = compile_skills(platform) # pre compiles skills into LLM-understandable exec options
+    skills, skills_catalog = compile_skills(platform) # pre compiles skills into LLM-understandable exec options
+    deberta_base = DeBERTaBase(skills.keys())
     context = ""
-    while(deberta.is_thinking()):
-        dbg("waitin on big DeBERTa...")
+    while(deberta_small.is_thinking()):
+        dbg("waitin on lil DeBERTa...")
         time.sleep(0.001)
-    if(skills_necessary > SKILLS_RELEVANT_THRESHOLD):
-        dbg("skills are relevant! selecting skills and building context...")
+    if(skills_necessary > config.SKILLS_RELEVANT_THRESHOLD):
+        dbg("skills are relevant! selecting skills...")
+        skill_relevances = deberta_base.predict(prompt)
+        while(deberta_base.is_thinking()):
+            dbg("waitin on big DeBERTa...")
+            time.sleep(0.001)
+        dbg("building context...")
         context_builder_executes = []
-        for relevance in skill_relevances: # TODO: perhaps do a batch call for all skills?
-            if relevance.value > SKILL_RELEVANT_THRESHOLD:
+        for relevance in skill_relevances: # TODO: perhaps do a batch call for all skills? currently looping llama3.2:3b for each
+            if relevance.value > config.SKILL_RELEVANT_THRESHOLD:
                 dbg(f"selecting inputs for: {relevance.skill_name} with relevance {relevance.value}...")
-                context_builder_executes.append([relevance.skill_name, select_inputs(prompt, relevance.skill_name, relevant_inputs)]) # [str: "skill_name", str[]: ["input1", "input2", ...]
-        context = build_context(context_builder_executes) # [[str: "skill_name", str[]: ["input1", "input2", ...], [str: "skill_name", str[]: ["input1", "input2", ...], ...] -> str: "context"
+                context_builder_executes.append([relevance.skill_name, select_inputs(prompt, relevance.skill_name, relevant_inputs, rag_guy)]) # [str: "skill_name", str[]: ["input1", "input2", ...]
+        context = await build_context(context_builder_executes, skills) # [[str: "skill_name", str[]: ["input1", "input2", ...], [str: "skill_name", str[]: ["input1", "input2", ...], ...] -> str: "context"
     else:
         dbg("skills not relevant, skipping to agent loop...")
     dbg_context(context)
@@ -167,7 +147,7 @@ def query(prompt):
     system_prompt = (
         f"You are Hal, a local command line assistive agent."
         + (f"Short term memory:\n{st_memory}\n\n" if st_memory != "" else "")
-        + f"AVAILABLE SKILLS: \n{compiled_skills}. Context so far: {context}\n"
+        + f"AVAILABLE SKILLS: \n{skills_catalog}. Context so far: {context}\n"
         f"To run a skill, respond with EXECUTE: skill|input. The output will be added to context. "
         f"Loop until you have enough to respond, and after building context reply to prompt in a concise and direct manner. "
         f"Ensure your final response to the user always makes sense directly following the prompt, and end responses with :3."
@@ -189,13 +169,13 @@ def query(prompt):
         print()
         lines_printed += 1
 
-        messages.append({"role": "user", "content": full_response})
+        messages.append({"role": "assistant", "content": full_response})
 
         if "EXECUTE:" not in full_response:
             final_response = full_response
             break
 
-        if not DEBUG:
+        if not config.DEBUG:
             print(f"\033[{lines_printed}A\033[J", end="", flush=True)
         dbg(f"execute: {full_response.strip()}")
         for line in full_response.splitlines():
@@ -203,18 +183,16 @@ def query(prompt):
                 parts = line.split("EXECUTE:", 1)[1].strip().split("|", 1)
                 skill = parts[0].strip().strip("()[]\"'")
                 input_arg = parts[1].strip().strip("()[]\"'") if len(parts) > 1 else ""
-                skill_path = os.path.join(os.path.join(HAL_DIR, platform, "skills"), f"{skill}.py")
-                if not os.path.exists(skill_path):
-                    messages.append({"role": "user", "content": f"[{skill}]: skill not found"})
+                if skill not in skills:
+                    messages.append({"role": "user", "content": f"[{skill}]: ERROR: skill not found"})
                     continue
-                result = subprocess.run(["python3", skill_path, input_arg], capture_output=True, text=True)
-                output = result.stdout.strip() or result.stderr.strip() or "(no output)"
+                output = await skills[skill].use(input_arg)
                 dbg(f"[{skill}]: {output}")
                 messages.append({"role": "user", "content": f"[{skill} result]: {output}"})
     end_time = time.time()
     print(f"\nresponse in {end_time - start_time:.2f}s.")
     if final_response:
-        save_short_term_memory(prompt, final_response, SHORT_TERM_MEMORY_LEN) # last 3 interactions are remembered
+        save_short_term_memory(prompt, final_response, config.SHORT_TERM_MEMORY_LEN) # last n interactions are remembered
 
 
 if __name__ == "__main__":
@@ -223,11 +201,11 @@ if __name__ == "__main__":
         train_skill_selector()
         args.remove("-t")
     if "-d" in args:
-        DEBUG = True
+        config.DEBUG = True
         args.remove("-d")
     if "-v" in args:
-        SHOW_CONTEXT = True
+        config.SHOW_CONTEXT = True
         args.remove("-v")
     
     prompt = " ".join(args)
-    query(prompt)
+    asyncio.run(query(prompt))
