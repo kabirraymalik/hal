@@ -1,0 +1,56 @@
+# hal profile for this Mac (M5 Max, 128 GB). Other devices get their own file; HAL_PROFILE selects it.
+default_runtime = "llama"
+
+# Tiers. Slot <name> loads models/<name>.<ext>. Servers start on demand; `hal sleep` unloads everything.
+[slots.small]               # persistent daily driver: fast, thinking off; requirements in docs/small_tier.md
+ctx = 32768
+idle_minutes = 240          # backstop for a forgotten `hal sleep`
+# args = "--reasoning-budget 0"   # server-side thinking cutoff; leaks a stray </think> with Nemotron's template, so off by default
+system = '''
+You are hal, a local assistant on the user's own Mac, answering from the command line.
+Be brief. Lead with the answer; no preamble, never restate the question.
+For "how do I" command questions: the command in a fenced block, then one line on what it does and any flag worth knowing. Prefer one good command over alternatives. If the command deletes, overwrites, or sends data anywhere, the first line of the answer must be a one-line caution beginning with `Caution:`, before the code block.
+For quick factual questions: at most three sentences.
+For pasted code, logs, or errors: the cause in one line, then the fix.
+Plain text; fenced code only for commands and code; no headers, no emoji; bullets only to enumerate more than three items.
+If the task needs several steps, deliberate reasoning, or reading many files, say so in one line and suggest `hal -m`.
+'''
+[slots.small.gen]
+chat_template_kwargs = { enable_thinking = false }   # Qwen-style toggle; gpt-oss wants reasoning_effort = "low"
+temperature = 0.4
+max_tokens = 1024
+
+[slots.medium]              # reasoning tier and escalation target; resident alongside small
+ctx = 65536
+idle_minutes = 240
+
+[slots.large]               # whole-machine tier: evicts everything else on start, leaves when idle
+ctx = 131072
+exclusive = true
+idle_minutes = 10
+
+[runtime.llama]             # llama-server, one process per slot
+ext = "gguf"
+health = "/health"
+launch = "llama-server -m {model} --alias {slot} --host 127.0.0.1 --port {port} -c {ctx} -np 1 -ngl 99 -fa on --jinja --cache-reuse 256 {args}"
+small  = "http://127.0.0.1:8081"
+medium = "http://127.0.0.1:8082"
+large  = "http://127.0.0.1:8083"
+
+[runtime.mlx]               # mlx_lm.server from the hal_mlx conda env, for comparison
+ext = "mlx"
+health = "/v1/models"
+launch = "~/miniconda3/envs/hal_mlx/bin/python -m mlx_lm.server --model {model} --host 127.0.0.1 --port {port} {args}"
+small  = "http://127.0.0.1:8091"
+medium = "http://127.0.0.1:8092"
+large  = "http://127.0.0.1:8093"
+
+[runtime.lmstudio]          # LM Studio / Bionic API server; not managed by hal, serves whatever is loaded there
+health = "/v1/models"
+small  = "http://127.0.0.1:1234"
+medium = "http://127.0.0.1:1234"
+large  = "http://127.0.0.1:1234"
+
+[gen]                       # merged into every request; [slots.<name>.gen] overrides per tier
+temperature = 0.7
+max_tokens = 2048

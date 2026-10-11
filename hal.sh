@@ -1,12 +1,11 @@
-#!/bin/bash
-
-ENV_NAME="hal_env"
-
-# Create environment if it doesn't exist
-if ! conda env list | grep -q "^$ENV_NAME "; then
-    echo "Creating conda environment '$ENV_NAME'..."
-    conda create -y -n "$ENV_NAME" python=3.11
-    conda run -n "$ENV_NAME" pip install ollama
+#!/bin/sh
+# hal launcher. Needs Python 3.11+ (tomllib); override the interpreter with HAL_PYTHON.
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+PY="${HAL_PYTHON:-}"
+if [ -z "$PY" ]; then
+  for c in python3 "$HOME/miniconda3/bin/python3" /opt/homebrew/bin/python3; do
+    if "$c" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then PY="$c"; break; fi
+  done
 fi
-
-conda run --no-capture-output -n "$ENV_NAME" python3 -u "$(dirname "$0")/main.py" "$@"
+[ -n "$PY" ] || { echo "hal: no python >= 3.11 found; set HAL_PYTHON" >&2; exit 1; }
+exec "$PY" -u "$HERE/hal.py" "$@"
